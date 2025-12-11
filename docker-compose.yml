@@ -1,0 +1,95 @@
+services:
+  revoltts1:
+    image: revoltts
+    container_name: revoltts1
+    runtime: nvidia                   # <<< 老版本用这个
+    ports: ["8001:8000"]
+    environment:
+      INDEXTTS_FP16: "true"
+      INDEXTTS_DEEPSPEED: "true"
+      INDEXTTS_CUDA_KERNEL: "true"
+      HF_HOME: /workspace/checkpoints/hf_cache
+      HF_HUB_CACHE: /workspace/checkpoints/hf_cache
+      INDEXTTS_CHECKPOINTS: /workspace/checkpoints
+      INDEXTTS_CONFIG: /workspace/checkpoints/config.yaml
+      INDEXTTS_OUTPUT_DIR: /workspace/outputs
+      INDEXTTS_LOG_DIR: /workspace/logs
+      NVIDIA_VISIBLE_DEVICES: "0"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    volumes:
+      - ./checkpoints:/workspace/checkpoints
+      - ./outputs:/workspace/outputs
+      - ./logs:/workspace/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  revoltts2:
+    image: revoltts
+    container_name: revoltts2
+    runtime: nvidia
+    ports: ["8002:8000"]
+    environment:
+      INDEXTTS_FP16: "true"
+      INDEXTTS_DEEPSPEED: "true"
+      INDEXTTS_CUDA_KERNEL: "true"
+      HF_HOME: /workspace/checkpoints/hf_cache
+      HF_HUB_CACHE: /workspace/checkpoints/hf_cache
+      INDEXTTS_CHECKPOINTS: /workspace/checkpoints
+      INDEXTTS_CONFIG: /workspace/checkpoints/config.yaml
+      INDEXTTS_OUTPUT_DIR: /workspace/outputs
+      INDEXTTS_LOG_DIR: /workspace/logs
+      NVIDIA_VISIBLE_DEVICES: "0"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    volumes:
+      - ./checkpoints:/workspace/checkpoints
+      - ./outputs:/workspace/outputs
+      - ./logs:/workspace/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # revoltts3:
+  #   image: revoltts
+  #   container_name: revoltts3
+  #   runtime: nvidia
+  #   ports: ["8003:8000"]
+  #   environment:
+  #     INDEXTTS_FP16: "true"
+  #     INDEXTTS_DEEPSPEED: "true"
+  #     INDEXTTS_CUDA_KERNEL: "true"
+  #     HF_HOME: /workspace/checkpoints/hf_cache
+  #     HF_HUB_CACHE: /workspace/checkpoints/hf_cache
+  #     INDEXTTS_CHECKPOINTS: /workspace/checkpoints
+  #     INDEXTTS_CONFIG: /workspace/checkpoints/config.yaml
+  #     INDEXTTS_OUTPUT_DIR: /workspace/outputs
+  #     INDEXTTS_LOG_DIR: /workspace/logs
+  #     NVIDIA_VISIBLE_DEVICES: "0"
+  #     NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+  #   volumes:
+  #     - ./checkpoints:/workspace/checkpoints
+  #     - ./outputs:/workspace/outputs
+  #     - ./logs:/workspace/logs
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 30s
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: revoltts-nginx
+    depends_on:
+      revoltts1: { condition: service_healthy }
+      revoltts2: { condition: service_healthy }
+      # revoltts3: { condition: service_healthy }
+    ports: ["80:80"]
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
