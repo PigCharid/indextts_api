@@ -26,6 +26,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    restart: unless-stopped
 
   revoltts2:
     image: revoltts
@@ -54,6 +55,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    restart: unless-stopped
 
   # revoltts3:
   #   image: revoltts
@@ -93,3 +95,4 @@ services:
     ports: ["80:80"]
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped

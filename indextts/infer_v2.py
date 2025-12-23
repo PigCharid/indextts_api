@@ -38,10 +38,11 @@ import torch.nn.functional as F
 # ==== 新增：后处理依赖 ====
 from torchaudio.sox_effects import apply_effects_tensor
 import webrtcvad
-
+import numpy as np
 
 # ==== 新增：后处理工具函数（静音删除 + 音质优化 + LUFS 可选）====
 def _merge_intervals(intervals, pad, max_len):
+    """合并相邻或重叠的区间"""
     if not intervals:
         return []
     intervals.sort()
@@ -56,64 +57,84 @@ def _merge_intervals(intervals, pad, max_len):
     merged.append((max(0, cur_s), min(max_len, cur_e)))
     return merged
 
-def remove_silence_webrtcvad(wav: torch.Tensor, sr: int,
-                             vad_aggressiveness: int = 2,
-                             frame_ms: int = 20,
-                             pad_ms: int = 120) -> torch.Tensor:
+
+def remove_silence_webrtcvad(
+    wav: torch.Tensor,
+    sr: int,
+    vad_aggressiveness: int = 3,
+    frame_ms: int = 10,
+    pad_ms: int = 30,  # 增加 padding 保护语音边界
+) -> torch.Tensor:
     """
-    WebRTC VAD 删除内部静音，保留 pad_ms 缓冲。
+    使用 WebRTC VAD 去除过程中的静音和开头空白。
+    只保留 VAD 检测到的语音段，简单直接。
     输入 wav: [1, T] 或 [C, T]（浮点 -1..1 或 int16尺度），返回与输入同采样率。
     """
     if wav.dim() == 1:
         wav = wav.unsqueeze(0)
+    
     # 统一到浮点 -1..1
     if wav.abs().max() > 1.5:
         wav = (wav / 32767.0).clamp(-1.0, 1.0)
     mono = wav.mean(dim=0, keepdim=True) if wav.size(0) > 1 else wav
 
+    # 重采样到 16kHz（WebRTC VAD 要求）
     sr_vad = 16000
     if frame_ms not in (10, 20, 30):
         frame_ms = 20
     mono16 = torchaudio.functional.resample(mono, sr, sr_vad).clamp(-1.0, 1.0)
     pcm16 = (mono16.squeeze(0) * 32767.0).to(torch.int16).cpu().numpy().tobytes()
 
+    # VAD 检测
     vad = webrtcvad.Vad(vad_aggressiveness)
     frame_bytes = int(sr_vad * frame_ms / 1000) * 2
     num_frames = len(pcm16) // frame_bytes
     print(f"[VAD] 总帧数: {num_frames}, 每帧 {frame_ms}ms, pad={pad_ms}ms, agg={vad_aggressiveness}")
 
-    voiced = []
+    # 检测语音帧
+    voiced_mask = [False] * num_frames
     for i in range(num_frames):
         chunk = pcm16[i * frame_bytes:(i + 1) * frame_bytes]
         if len(chunk) < frame_bytes:
             break
         if vad.is_speech(chunk, sr_vad):
-            voiced.append(i)
-    print(f"[VAD] 语音帧数: {len(voiced)}")
+            voiced_mask[i] = True
+    
+    voiced_count = sum(voiced_mask)
+    print(f"[VAD] 语音帧数: {voiced_count}")
 
-    if not voiced:
+    if voiced_count == 0:
         print("[VAD] 没检测到语音，返回原始音频")
         return wav
 
+    # 找到语音段的区间
     pad_frames = int(pad_ms / frame_ms)
     intervals = []
-    start = prev = voiced[0]
-    for idx in voiced[1:]:
+    voiced_idx = [i for i, v in enumerate(voiced_mask) if v]
+    if not voiced_idx:
+        return wav
+    
+    start = prev = voiced_idx[0]
+    for idx in voiced_idx[1:]:
         if idx == prev + 1:
             prev = idx
         else:
+            # 区间结束，添加 padding
             intervals.append((max(0, start - pad_frames), min(num_frames - 1, prev + pad_frames)))
             start = prev = idx
     intervals.append((max(0, start - pad_frames), min(num_frames - 1, prev + pad_frames)))
-    print(f"[VAD] 初始区间数: {len(intervals)} -> {intervals[:5]}...")
+    print(f"[VAD] 初始区间数: {len(intervals)}")
 
+    # 合并相邻区间
     samples_per_frame_vad = int(sr_vad * frame_ms / 1000)
     merged = _merge_intervals(
         [(s * samples_per_frame_vad, (e + 1) * samples_per_frame_vad) for s, e in intervals],
-        pad=samples_per_frame_vad, max_len=mono16.shape[-1]
+        pad=samples_per_frame_vad * 2,  # 合并时允许更大的间隔
+        max_len=mono16.shape[-1],
     )
-    print(f"[VAD] 合并后区间数: {len(merged)} -> {[(s, e) for s, e in merged[:5]]}...")
+    print(f"[VAD] 合并后区间数: {len(merged)}")
 
+    # 提取语音段
     pieces = []
     for s16, e16 in merged:
         s0 = int(round(s16 * sr / sr_vad))
@@ -122,7 +143,12 @@ def remove_silence_webrtcvad(wav: torch.Tensor, sr: int,
         e0 = max(0, min(e0, wav.shape[-1]))
         if e0 > s0:
             pieces.append(wav[..., s0:e0])
-    wav_out = torch.cat(pieces, dim=-1) if pieces else wav
+    
+    if not pieces:
+        print("[VAD] 没有提取到语音段，返回原始音频")
+        return wav
+    
+    wav_out = torch.cat(pieces, dim=-1)
 
     dur_before = wav.shape[-1] / sr
     dur_after = wav_out.shape[-1] / sr
